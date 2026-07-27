@@ -18,6 +18,8 @@ import time
 #from sklearn.metrics import explained_variance_score
 #from sklearn.metrics import roc_curve, auc
 from sklearn.model_selection import train_test_split
+from calflops import calculate_flops # basic flops and macs estimation based on the model graph
+from torch.profiler import profile, ProfilerActivity, record_function # measures actual flops and macs during runtime, depends on batching, optimisers, etc. so more application specific
 
 # CNN
 import keras
@@ -41,7 +43,7 @@ activation = "relu"
 
 # Training parameters
 batch_size = 128
-epochs = 30
+epochs = 10
 optimizer = "adam"
 loss_function = "categorical_crossentropy"
 
@@ -121,6 +123,14 @@ model = build_CNN(input_shape, num_classes, num_layers, num_filters, kernel_size
 
 if debug_mode:
     model.summary()
+
+#%% FLOPs and MACs estimation
+
+flops, macs, params = calculate_flops(
+    model=model,
+    input_shape=(batch_size,) + input_shape,
+    output_as_string=True,
+)
 
 #%% Compile and train model
 
