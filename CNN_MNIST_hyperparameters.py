@@ -1,4 +1,4 @@
-# Benchmarking CNNs on the MNIST dataset for accuracy and energy (FLOPs, MACs)
+# Hyperparameter optimisation for CNN to achieve minimum energy use
 
 
 #%% Imports
@@ -22,6 +22,7 @@ from sklearn.model_selection import train_test_split
 # CNN
 import keras
 from keras import layers
+import keras_tuner
 
 # Visualisation
 
@@ -33,15 +34,11 @@ debug_mode = True
 seed = 1
 
 # CNN parameters
-num_layers = 1
-num_filters = 2 # number of kernels per unit, this goes for all conv layers
-kernel_size = (3, 3) # use an odd number kernel size for your own sake
-pool_size = (2, 2) # there will always be one pooling layer per conv layer, set to None to remove pooling layers
-activation = "relu"
+num_filters = 2 # hard coding this for now to match the effective number of filters present in N-MNIST
 
 # Training parameters
 batch_size = 128
-epochs = 5
+#epochs = 5
 optimizer = "adam"
 loss_function = "categorical_crossentropy"
 
@@ -49,20 +46,22 @@ loss_function = "categorical_crossentropy"
 evalute_training_set = False # Evaluates using the full training set every epoch without dropout and batch norm giving accurate training accuracy but very slow
 #%% Extra function definitions
 
-def build_CNN(input_shape, num_classes, num_layers, num_filters, kernel_size, pool_size = None, activation = "relu"):
+def build_CNN(hp): # define using hp.[dtype]("[hyperparameter]") to read in to keras tuner
     model_params = [keras.Input(shape=input_shape)]
-
-    for _ in range(num_layers):
-        model_params.append(layers.Conv2D(num_filters, kernel_size=kernel_size, activation=activation))
-        if pool_size is not None:
+    pool_size =hp.Int("pool_size", min_value=1, max_value=4, step=1)
+    for _ in range(hp.Int("num_layers", min_value=1, max_value=8, step=1)):
+        model_params.append(layers.Conv2D(num_filters, kernel_size=hp.Int("kernel_size", min_value=3, max_value=7, step=2), activation=hp.Choice("activation", values=["relu", "tanh", "sigmoid"])))
+        if pool_size > 1:
             model_params.append(layers.MaxPooling2D(pool_size=pool_size))
     model_params.append(layers.Flatten())
     model_params.append(layers.Dropout(0.5))
     model_params.append(layers.Dense(num_classes, activation="softmax"))
     model = keras.Sequential(model_params)
+    model.compile(optimizer=optimizer, loss=loss_function, metrics=[efficiency(),"val_accuracy"])
     return model
 
-class EvaluateTrainAndVal(keras.callbacks.Callback):
+# Custom callback to allow for evaluation of the training set every epoch, without dropout and batch norm (very slow)
+'''class EvaluateTrainAndVal(keras.callbacks.Callback):
     
     def __init__(self, train_data):
         super().__init__()
@@ -80,9 +79,20 @@ class EvaluateTrainAndVal(keras.callbacks.Callback):
         print(
             f"\nEpoch {epoch+1}: "
             f"train_eval_acc={train_accuracy:.4f}, "
-        )
+        )'''
 
+# Custom tuner to optimize hyperparameters for energy efficiency (FLOPs/MACs)
+# using random search for now to develop
+class efficiency(keras_tuner.randomSearch):
+    def __init__(self, **kwargs):
+        # Specify the name of the metric as "custom_metric".
+        super().__init__(name="efficiency", **kwargs)
 
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        return
+    
+    def result(self):
+        return
 #%% Load MNIST dataset
 # From Keras tutorial  https://keras.io/examples/vision/mnist_convnet/
 
@@ -111,25 +121,31 @@ if debug_mode:
 y_train = keras.utils.to_categorical(y_train, num_classes)
 y_test = keras.utils.to_categorical(y_test, num_classes)
 
-# split training data into training and validation sets
+# split training data into training and validation sets, for compatibility with profiling (planned)
 x_train, x_val, y_train, y_val = train_test_split(x_train, y_train, test_size=0.1, shuffle=debug_mode)
 
 #%% Initialise network
 # Adapted from Keras tutorial  https://keras.io/examples/vision/mnist_convnet/
 
-model = build_CNN(input_shape, num_classes, num_layers, num_filters, kernel_size, pool_size, activation)
+model = build_CNN(keras_tuner.HyperParameters()) # set hyperparameters to be optimised
 
 if debug_mode:
     model.summary()
 
-#%% Compile and train model
+tuner = keras_tuner.RandomSearch(
+    build_CNN,
+    objective="val_accuracy",
+    max_trials=5, # number of hyperparameter combinations to try
+    executions_per_trial=5, # number of times to train each model
+    directory="tuner_results",
+    project_name="mnist_cnn_tuning",
+)
 
-evaluation = EvaluateTrainAndVal((x_train, y_train))
+#%% Train model
 
-model.compile(optimizer=optimizer, loss=loss_function, metrics=["accuracy"])
+#evaluation = EvaluateTrainAndVal((x_train, y_train))
 
-#model.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, validation_data=(x_val, y_val), verbose=debug_mode, callbacks=[evaluation])
-model.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, validation_data=(x_val, y_val), verbose=debug_mode) # no callbacks test
+#model.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, validation_data=(x_val, y_val), verbose=debug_mode)
 
 
 #%% Evaluate model
