@@ -30,6 +30,10 @@ from keras import layers
 import matplotlib.pyplot as plt
 
 #%% Script options
+
+# Save directory for output plots
+SAVE_DIR = './plots/'
+
 # enable to add verbose output and reproducible seeds
 debug_mode = True
 seed = 1
@@ -158,4 +162,6 @@ plt.title('MNIST classification performance')
 plt.xlabel('Epoch')
 plt.ylabel('Accuracy')
 plt.legend(loc='upper left')
-plt.show()
+#plt.show()
+
+plt.savefig(SAVE_DIR+'training.svg')
