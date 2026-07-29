@@ -1,6 +1,5 @@
 # Hyperparameter optimisation for CNN to achieve minimum energy use
 
-
 #%% Imports
 
 # Setup
@@ -38,7 +37,7 @@ seed = 1
 num_filters = 2 # hard coding this for now to match the effective number of filters present in N-MNIST
 
 # Training parameters
-batch_size = 128
+batch_size = int(128)
 #epochs = 5
 optimizer = "adam"
 loss_function = "categorical_crossentropy"
@@ -48,69 +47,74 @@ evalute_training_set = False # Evaluates using the full training set every epoch
 #%% Extra function definitions
 
 # Create the network structure
+# TODO: make all values customisable
 def build_CNN(hp): # define using hp.[dtype]("[hyperparameter]") to read in to keras tuner
+    current_shape = input_shape[0] # hardcoded for square images for now
     model_params = [keras.Input(shape=input_shape)]
-    pool_size =hp.Int("pool_size", min_value=1, max_value=4, step=1)
-    for _ in range(hp.Int("num_layers", min_value=1, max_value=8, step=1)):
-        model_params.append(layers.Conv2D(num_filters, kernel_size=hp.Int("kernel_size", min_value=3, max_value=7, step=2), activation=hp.Choice("activation", values=["relu", "tanh", "sigmoid"])))
-        if pool_size > 1:
+    pool_size = hp.Int("pool_size", min_value=1, max_value=4, step=1)
+    kernel_size = hp.Int("kernel_size", min_value=3, max_value=5, step=2)
+    num_layers = hp.Int("num_layers", min_value=1, max_value=3, step=1)
+    for _ in range(num_layers):
+        if current_shape > kernel_size:
+            model_params.append(layers.Conv2D(num_filters, kernel_size=kernel_size, activation=hp.Choice("activation", values=["relu", "tanh", "sigmoid"])))
+            current_shape -= kernel_size - 1
+        if pool_size > 1 and current_shape >= 2*pool_size:
             model_params.append(layers.MaxPooling2D(pool_size=pool_size))
+            current_shape /= pool_size
     model_params.append(layers.Flatten())
     model_params.append(layers.Dropout(0.5))
     model_params.append(layers.Dense(num_classes, activation="softmax"))
     model = keras.Sequential(model_params)
     model.compile(optimizer=optimizer, loss=loss_function, metrics=["accuracy"])
+    #model.summary()
     return model
 
-# Custom callback to allow for a hyperparameter optimisation metric that is only called once per trial
-class efficiencyCallback(keras.callbacks.Callback):
+# Custom hypermodel to add metric to fit
+# TODO: make all components customisable (early stop)
+class CNN(keras_tuner.HyperModel):
 
-    def __init__(self):
-        self.best_epoch = None
-        self.best_value = -float("inf")
+    def build(self, hp):
+        return build_CNN(hp)
 
-    def on_epoch_end(self, epoch, logs=None):
-        value = logs.get("val_accuracy")
+    def fit(self, hp, model, *args, **kwargs):
 
-        if value is not None and value > self.best_value:
-            self.best_value = value
-            self.best_epoch = epoch
+        # Update callbacks kwarg without causing issues
 
-    def on_train_end(self, logs=None):
-        # output: flops, macs, params
-        _, macs, _ = calculate_flops(
-        model=self.model,
-        input_shape=(batch_size,) + input_shape,
-        output_as_string=True,
-        )
+        callbacks = kwargs.pop("callbacks", [])
 
-        logs = logs or {}
-        logs["train_efficiency"] = macs * self.best_epoch
-        logs["infer_efficiency"] = macs
+        early_stop = keras.callbacks.EarlyStopping(
+                                monitor="val_accuracy",
+                                mode="max",
+                                patience=3,
+                                restore_best_weights=True,
+                            )
 
-# Custom tuner to optimize hyperparameters for energy efficiency (FLOPs/MACs)
-# using random search for now to develop
-# currently using custom callback to implement this feature but as the tuner method is more flexible I'm keeping it around in case it becomes needed
-'''
-class efficiency(keras_tuner.randomSearch):
-    def __init__(self, **kwargs):
-        # Specify the name of the metric as "custom_metric".
-        super().__init__(name="efficiency", **kwargs)
+        callbacks.append(early_stop)
 
-    def run_trial(self, trial, *args, **kwargs):
-        hp = trial.hyperparameters
-        model = self.hypermodel.build(hp)
-        score = calculate_flops(
-                    model=model,
-                    input_shape=(batch_size,) + input_shape,
-                    output_as_string=True,
+        kwargs["callbacks"] = callbacks
+
+        '''history = model.fit(
+            *args,
+            **kwargs
+        )'''
+
+        history = super().fit(hp,model,
+                    *args,
+                    **kwargs
                 )
-        
-        return self.hypermodel.fit(hp, model, *args, **kwargs)
 
-    def result(self):
-        return
-'''
+        _, macs, _ = calculate_flops(
+                            model=model,
+                            input_shape=(batch_size,) + input_shape,
+                            output_as_string=False
+                        )
+
+        epochs = early_stop.best_epoch + 1
+
+        history.history["train_efficiency"] = [macs*epochs] * len(history.history["loss"])
+        history.history["infer_efficiency"] = [macs] * len(history.history["loss"])
+
+        return history
 
 #%% Load MNIST dataset
 # From Keras tutorial  https://keras.io/examples/vision/mnist_convnet/
@@ -143,36 +147,35 @@ y_test = keras.utils.to_categorical(y_test, num_classes)
 # split training data into training and validation sets, for compatibility with profiling (planned)
 x_train, x_val, y_train, y_val = train_test_split(x_train, y_train, test_size=0.1, shuffle=debug_mode)
 
-#%% Initialise network
-# Adapted from Keras tutorial  https://keras.io/examples/vision/mnist_convnet/
-
-model = build_CNN(keras_tuner.HyperParameters()) # test build
-
-if debug_mode:
-    model.summary()
-
-
 #%% Hyperparameter optimisation
 
 # Define hyperparameter optimisation goals and constraints
+
 tuner = keras_tuner.RandomSearch(
-    hypermodel=build_CNN,
-    objective=[keras_tuner.Objective("train_efficiency","max"),
-               keras_tuner.Objective("infer_efficiency","max"),
+    hypermodel=CNN(),
+    objective=[keras_tuner.Objective("train_efficiency","min"),
+               keras_tuner.Objective("infer_efficiency","min"),
                keras_tuner.Objective("val_accuracy","max")
     ],
     max_trials=3, # number of hyperparameter combinations to try
     executions_per_trial=1, # number of times to train each model
+    directory="CNN_hyperparams",
+    project_name="experiment0",
+    overwrite=True # very important!!! DO NOT TURN OFF OR BULLSHIT WILL HAPPEN
 )
 
-tuner.search(x_train, y_train, epochs = 5, validation_data=(x_val, y_val),callbacks=efficiencyCallback())
-
+tuner.search(x_train, y_train, epochs = 6, validation_data=(x_val, y_val), batch_size=128)
 
 #%% Evaluate model
 
 models = tuner.get_best_models(num_models=2)
 best_model = models[0]
+print("-------------------------------------------------")
+print("Best model summary")
 best_model.summary()
+
+# TODO: Verify optimisation is working correctly (actually getting lowest FLOPs/MACs with highest accuracy), related to below
+# TODO: add data extraction from tuner.oracle
 
 #%% Visualisation
 
