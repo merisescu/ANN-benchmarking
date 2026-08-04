@@ -47,7 +47,8 @@ activation = "relu"
 
 # Training parameters
 batch_size = 128
-epochs = 10
+epochs = 30
+optimizers = 
 optimizer = "adam"
 loss_function = "categorical_crossentropy"
 
@@ -137,16 +138,28 @@ flops, macs, params = calculate_flops(
 )
 
 #%% Compile and train model
-
+'''
 evaluation = EvaluateTrainAndVal((x_train, y_train))
 
 model.compile(optimizer=optimizer, loss=loss_function, metrics=["accuracy"])
 
 #model.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, validation_data=(x_val, y_val), verbose=debug_mode, callbacks=[evaluation])
 model.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, validation_data=(x_val, y_val), verbose=debug_mode) # no callbacks test
+'''
 
+#%% test compare gradient descent and Adam
 
-#%% Evaluate model
+#evaluation = EvaluateTrainAndVal((x_train, y_train))
+
+adam = keras.optimizers.Adam()
+
+simple_gd = keras.optimizers.SGD(momentum=0,netserov=False) #disables stochastic and momentum
+
+optimizers = [adam, simple_gd]
+
+for optimizer in optimizers:
+    model.compile(optimizer=optimizer, loss=loss_function, metrics=["accuracy"])
+    model.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, validation_data=(x_val, y_val), verbose=debug_mode)
 
 score = model.evaluate(x_test, y_test, verbose=debug_mode)
 
